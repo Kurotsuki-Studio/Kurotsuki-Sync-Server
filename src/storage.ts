@@ -159,7 +159,12 @@ export class StorageEngine {
     const targetPath = this.getAttachmentPath(vaultId, relativePath);
     if (fs.existsSync(targetPath)) {
       try {
-        fs.unlinkSync(targetPath);
+        const stat = fs.statSync(targetPath);
+        if (stat.isDirectory()) {
+          fs.rmSync(targetPath, { recursive: true, force: true });
+        } else {
+          fs.unlinkSync(targetPath);
+        }
         return true;
       } catch (err) {
         console.error(`[Storage] Failed to delete attachment ${targetPath}:`, err);
