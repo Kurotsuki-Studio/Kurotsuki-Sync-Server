@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   kurotsuki-relay:
     build:
@@ -8,15 +6,15 @@ services:
     container_name: kurotsuki-sync-relay
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "${PORT:-3050}:${PORT:-3050}"
     environment:
       - NODE_ENV=production
-      - PORT=3000
+      - PORT=${PORT:-3050}
       - HOST=0.0.0.0
       - STORAGE_DIR=/data
-      - AUTH_TOKEN=${AUTH_TOKEN:-change-me-to-a-secure-secret}
-      - MAX_PAYLOAD_MB=50
-      - CORS_ENABLED=true
+      - AUTH_TOKEN=${AUTH_TOKEN:-kurotsuki_vault}
+      - MAX_PAYLOAD_MB=${MAX_PAYLOAD_MB:-50}
+      - CORS_ENABLED=${CORS_ENABLED:-true}
     volumes:
       - ./data:/data
 
