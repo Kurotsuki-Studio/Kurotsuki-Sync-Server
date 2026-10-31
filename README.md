@@ -1,8 +1,8 @@
 # 🌙 Kurotsuki Sync Relay Server
 
 <p align="center">
-  <b>Self-hosted real-time collaboration and vault synchronization relay server for Obsidian</b><br>
-  <b>Serveur relais de synchronisation et de collaboration temps réel auto-hébergeable pour Obsidian</b>
+  <b>Enterprise-grade self-hosted real-time collaboration, RBAC governance, and vault synchronization relay server for Obsidian</b><br>
+  <b>Serveur relais de synchronisation et de collaboration temps réel multi-vault avec gestion des permissions (RBAC) pour Obsidian</b>
 </p>
 
 <p align="center">
@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="#english">English</a> • <a href="#français">Français</a>
+  <a href="#english">English</a> • <a href="#français">Français</a> • <a href="#vps-update">Mise à jour VPS / VPS Update</a>
 </p>
 
 ---
@@ -21,16 +21,20 @@
 <a name="english"></a>
 ## 🇬🇧 English
 
-The **Kurotsuki Sync Relay Server** is the self-hostable backend powering the [**Kurotsuki Sync Obsidian Plugin**](https://github.com/Kurotsuki-Studio/Kurotsuki-Sync). It provides real-time WebSockets synchronization, persistent disk storage for [Yjs](https://yjs.dev/) CRDT document states, and an authenticated binary storage API for vault attachments (images, PDFs, media).
+The **Kurotsuki Sync Relay Server** is the self-hostable cloud relay and synchronization engine powering the [**Kurotsuki Sync Obsidian Plugin**](https://github.com/Kurotsuki-Studio/Kurotsuki-Sync). It provides real-time WebSockets synchronization, persistent disk storage for [Yjs](https://yjs.dev/) CRDT document states, an integrated **Web Admin Panel**, multi-vault governance, Role-Based Access Control (**RBAC**), and authenticated binary storage for vault attachments (images, PDFs, media).
 
-### ⚡ Features
+### ⚡ Key Features
 
-- 🚀 **High Performance & Lightweight:** Built with TypeScript & Node.js on top of native `ws` WebSockets.
-- 💾 **Persistent CRDT Storage:** Automatic persistence of Y.Doc states on local disk in compact binary format.
-- 📎 **Binary Attachments API:** Built-in HTTP REST endpoints for uploading and streaming attachments and media files.
-- 🔒 **Bearer Token Authentication:** Enforces secure token validation on all WebSocket and HTTP attachment requests.
-- 🐳 **One-Command Docker Deployment:** Production-ready multi-stage `Dockerfile` and `docker-compose.yml`.
-- 🌐 **Reverse Proxy Ready:** Sample Caddy configuration for automated HTTPS and WSS with Let's Encrypt certificates.
+- 🚀 **Centralized Relay & Persistent Storage:** The server is the single source of truth. Offline collaborators can edit freely; changes merge automatically with conflict-free CRDT resolution when reconnected.
+- 🗂️ **Multi-Vault & Multi-Room Governance:** Host unlimited distinct vaults or shared team workspaces on one server instance with isolated namespaces and configurable storage quotas.
+- 🛡️ **Role-Based Access Control (RBAC):**
+  - **Admin:** Full control over vaults, user tokens, backups, and live sessions.
+  - **Editor:** Read and write permissions for real-time document collaboration and attachments.
+  - **Viewer (Read-Only):** Locked in read-only mode. Both server and client actively block unauthorized edits.
+- 💻 **Integrated Web Admin Panel (`/admin`):** Modern responsive dark UI to monitor server health, inspect active peer sessions, generate scoped API tokens, export full vault archives, and terminate connections.
+- 🔄 **Full File System Reconciliation:** Synchronizes changes made from file explorers (Windows Explorer, Finder, terminal) both in real-time and upon launching Obsidian.
+- 📎 **Binary Attachments API:** HTTP REST endpoints for uploading, streaming, and caching binary media files up to configurable limits.
+- 🐳 **Docker & Docker Compose Ready:** Production-ready multi-stage Docker build with health check and zero-config volume persistence.
 
 ---
 
@@ -40,176 +44,95 @@ Create a `.env` file in the root directory (or copy from `.env.example`):
 
 | Variable | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `PORT` | Number | `3000` | Network port the HTTP & WebSocket server listens on |
+| `PORT` | Number | `3050` | Network port the HTTP & WebSocket server listens on |
 | `HOST` | String | `0.0.0.0` | IP address / host interface to bind to |
-| `STORAGE_DIR` | Path | `./data` | Root directory path on disk for persisting Y.Docs and attachments |
-| `AUTH_TOKEN` | String | *(empty)* | Secret authentication token required by clients (leave empty for open access) |
+| `STORAGE_DIR` | Path | `./data` | Root directory path on disk for persisting Y.Docs, vaults, and tokens |
+| `AUTH_TOKEN` | String | *(required)* | Master admin secret token for initial Web Admin Panel access and API authentication |
 | `MAX_PAYLOAD_MB` | Number | `50` | Maximum allowed file size for attachment uploads (in Megabytes) |
 | `CORS_ENABLED` | Boolean | `true` | Enable CORS headers for browser and web-based clients (`true` / `false`) |
 
 ---
 
-### 🚀 Docker Deployment (Recommended)
+### 🚀 Initial Docker Deployment
 
 ```bash
 # 1. Clone the repository
 git clone https://github.com/Kurotsuki-Studio/Kurotsuki-Sync-Server.git
 cd Kurotsuki-Sync-Server
 
-# 2. Copy and customize configuration
+# 2. Configure environment
 cp .env.example .env
-# Edit .env to set your secret AUTH_TOKEN
+nano .env
+# Set your desired PORT (e.g. 3050) and your secret AUTH_TOKEN (e.g. AUTH_TOKEN=my_secure_secret)
 
-# 3. Start the container in background
-docker compose up -d
+# 3. Build and launch with Docker Compose
+docker compose up -d --build
 
-# 4. View logs
+# 4. View real-time logs
 docker compose logs -f
 ```
 
 ---
 
-### 🌐 Reverse Proxy with SSL (Caddy Example)
+<a name="vps-update"></a>
+### 🔄 How to Update the Server on your VPS / Tutoriel de mise à jour VPS
 
-For secure remote synchronization (`wss://`), put the server behind a reverse proxy like Caddy:
-
-```caddy
-sync.yourdomain.com {
-    reverse_proxy localhost:3000
-}
-```
-
-Then configure the Obsidian plugin with: `wss://sync.yourdomain.com`
-
----
-
-### 🖥️ Direct Node.js Deployment (Without Docker)
-
-**Prerequisites:** Node.js >= 18 and npm
+When a new version or patch is released, update your VPS with these commands:
 
 ```bash
-git clone https://github.com/Kurotsuki-Studio/Kurotsuki-Sync-Server.git
-cd Kurotsuki-Sync-Server
+# 1. Navigate to your server folder on the VPS
+cd /root/Kurotsuki-Sync-Server # or wherever you cloned the repo
 
-npm install
-npm run build
-npm start
+# 2. Pull the latest updates from GitHub
+git pull origin main
+
+# 3. (Optional) Check or adjust your .env settings if needed
+nano .env
+
+# 4. Stop the old container and rebuild the image with the new code
+docker compose down
+docker compose up -d --build
+
+# 5. Check container logs to verify clean startup
+docker compose logs -f
 ```
+
+> [!IMPORTANT]
+> **Why not just `docker compose restart`?**
+> A simple `restart` only reboots the container in memory without rebuilding the code or re-reading `.env` variable changes. Running `docker compose down && docker compose up -d --build` guarantees that all code updates and `.env` credentials are built into the container.
 
 ---
 
-### 📡 HTTP & WebSocket API Reference
+### 🌐 Reverse Proxy & Cloudflare Tunnel
 
-| Protocol | Method | Route | Description | Auth Required |
-| :--- | :--- | :--- | :--- | :--- |
-| **HTTP** | `GET` | `/health` or `/api/v1/health` | Health check and server status | No |
-| **HTTP** | `GET` | `/api/v1/stats` | Metrics (active rooms, memory usage) | Yes (`Bearer <token>`) |
-| **HTTP** | `PUT` | `/api/v1/attachments/:vaultId/:filePath` | Upload binary attachment | Yes (`Bearer <token>`) |
-| **HTTP** | `GET` | `/api/v1/attachments/:vaultId/:filePath` | Download binary attachment | Yes (`Bearer <token>`) |
-| **WS** | `WS` | `/?vaultId=<id>&token=<token>` | Live Yjs document sync & awareness | Yes (`token` param or auth message) |
+For secure remote synchronization (`wss://`), place the server behind Cloudflare Tunnel, Caddy, or Nginx:
+
+#### Cloudflare Tunnel (Zero Trust)
+- Service Type: `HTTP`
+- URL: `localhost:3050` (or `http://127.0.0.1:3050`)
+- Public hostname: `relay.yourdomain.com`
+
+#### Caddy Example (`Caddyfile`)
+```caddy
+relay.yourdomain.com {
+    reverse_proxy localhost:3050
+}
+```
 
 ---
 
 <a name="français"></a>
 ## 🇫🇷 Français
 
-Le **Kurotsuki Sync Relay Server** est le composant backend auto-hébergeable pour le plugin Obsidian [**Kurotsuki Sync**](https://github.com/Kurotsuki-Studio/Kurotsuki-Sync). Il orchestre la synchronisation en temps réel par WebSockets, la persistance sur disque des documents [Yjs](https://yjs.dev/) (CRDT) et le stockage sécurisé des pièces jointes et médias binaires.
+Le **Serveur Relais Kurotsuki Sync** est la solution cloud auto-hébergeable propulsant le [**Plugin Obsidian Kurotsuki Sync**](https://github.com/Kurotsuki-Studio/Kurotsuki-Sync). Il combine la synchronisation temps réel par WebSockets, la persistance locale des états CRDT [Yjs](https://yjs.dev/), un **Panel Web d'administration (`/admin`)**, la gouvernance multi-coffres et le contrôle des accès par rôle (**RBAC**).
 
-### ⚡ Fonctionnalités
+### ⚡ Fonctionnalités Clés
 
-- 🚀 **Performant et Léger :** Conçu en TypeScript et Node.js avec le moteur WebSocket natif `ws`.
-- 💾 **Persistance Robuste sur Disque :** Sauvegarde automatique des états Y.Doc sur le disque local dans un format binaire compact.
-- 📎 **API de Pièces Jointes :** Points de terminaison HTTP intégrés pour l'envoi et le téléchargement des images, sons, et fichiers joints.
-- 🔒 **Authentification par Jeton (Bearer Token) :** Validation stricte du jeton secret sur toutes les connexions WebSocket et requêtes HTTP.
-- 🐳 **Déploiement Docker en 1 Commande :** Configuration `Dockerfile` multi-stage et `docker-compose.yml` optimisée.
-- 🌐 **Prêt pour Proxy Inverse :** Configuration Caddy fournie pour un chiffrement automatique HTTPS et WSS (Let's Encrypt).
-
----
-
-### ⚙️ Variables de Configuration (`.env`)
-
-Créez un fichier `.env` à la racine du serveur (ou copiez `.env.example`) :
-
-| Variable | Type | Valeur par défaut | Description |
-| :--- | :--- | :--- | :--- |
-| `PORT` | Nombre | `3000` | Port d'écoute réseau du serveur HTTP et WebSocket |
-| `HOST` | Chaîne | `0.0.0.0` | Adresse IP d'écoute de l'interface réseau |
-| `STORAGE_DIR` | Chemin | `./data` | Dossier de stockage persistant pour les documents et pièces jointes |
-| `AUTH_TOKEN` | Chaîne | *(vide)* | Jeton secret d'authentification exigé pour se connecter (vide = accès libre) |
-| `MAX_PAYLOAD_MB` | Nombre | `50` | Taille maximale autorisée pour l'envoi d'une pièce jointe (en Mo) |
-| `CORS_ENABLED` | Booléen | `true` | Activation des en-têtes CORS pour les navigateurs (`true` / `false`) |
-
----
-
-### 🚀 Déploiement Docker (Recommandé)
-
-```bash
-# 1. Cloner le dépôt
-git clone https://github.com/Kurotsuki-Studio/Kurotsuki-Sync-Server.git
-cd Kurotsuki-Sync-Server
-
-# 2. Configurer le fichier .env
-cp .env.example .env
-# Éditez .env pour définir votre AUTH_TOKEN secret
-
-# 3. Lancer le conteneur en tâche de fond
-docker compose up -d
-
-# 4. Consulter les logs
-docker compose logs -f
-```
-
----
-
-### 🌐 Proxy Inverse avec Certificat SSL (Exemple Caddy)
-
-Pour synchroniser vos appareils de manière sécurisée en dehors de votre réseau local (`wss://`), placez le serveur derrière un proxy inverse comme Caddy :
-
-```caddy
-sync.votre-domaine.fr {
-    reverse_proxy localhost:3000
-}
-```
-
-Dans les réglages du plugin Obsidian, indiquez ensuite : `wss://sync.votre-domaine.fr`
-
----
-
-### 🖥️ Déploiement direct avec Node.js (Sans Docker)
-
-**Prérequis :** Node.js >= 18 et npm
-
-```bash
-git clone https://github.com/Kurotsuki-Studio/Kurotsuki-Sync-Server.git
-cd Kurotsuki-Sync-Server
-
-npm install
-npm run build
-npm start
-```
-
----
-
-### 📡 Référence de l'API HTTP & WebSocket
-
-| Protocole | Méthode | Route | Description | Authentification |
-| :--- | :--- | :--- | :--- | :--- |
-| **HTTP** | `GET` | `/health` ou `/api/v1/health` | État de santé et version du serveur | Non |
-| **HTTP** | `GET` | `/api/v1/stats` | Métriques (salons actifs, mémoire) | Oui (`Bearer <token>`) |
-| **HTTP** | `PUT` | `/api/v1/attachments/:vaultId/:filePath` | Téléversement d'une pièce jointe | Oui (`Bearer <token>`) |
-| **HTTP** | `GET` | `/api/v1/attachments/:vaultId/:filePath` | Téléchargement d'une pièce jointe | Oui (`Bearer <token>`) |
-| **WS** | `WS` | `/?vaultId=<id>&token=<token>` | Synchronisation Yjs & curseurs en direct | Oui (paramètre `token` ou message auth) |
-
----
-
-## 🧪 Tests
-
-```bash
-npm test
-```
-
----
-
-## 📄 Licence
-
-MIT License - Copyright (c) 2026 [Kurotsuki Studio](https://github.com/Kurotsuki-Studio).
+- 🚀 **Relais Centralisé & Stockage Permanent :** Le serveur héberge l'intégralité du coffre. Si un utilisateur se déconnecte, les autres continuent d'écrire sans coupure. À la reconnexion, les modifications fusionnent automatiquement sans conflit.
+- 🗂️ **Gestion Multi-Coffres & Salons :** Hébergez plusieurs coffres indépendants sur un même serveur avec quotas et restrictions d'accès par salon.
+- 🛡️ **Système de Permissions (RBAC) :**
+  - **Admin :** Accès total au panel d'administration, création/révocation de tokens, gestion des coffres et des sauvegardes.
+  - **Editor :** Lecture et écriture temps réel sur les notes et pièces jointes.
+  - **Viewer (Lecture Seule) :** Blocage strict en lecture seule côté serveur et côté client (CodeMirror 6 verrouillé).
+- 💻 **Panel d'Administration Web (`/admin`) :** Interface moderne pour surveiller les utilisateurs connectés, créer des tokens avec rôles personnalisés, déconnecter des sessions et exporter des sauvegardes.
+- 🔄 **Prise en charge de l'Explorateur de Fichiers :** Créer ou supprimer des fichiers directement depuis l'explorateur Windows / Linux est synchronisé automatiquement en direct et au lancement d'Obsidian.

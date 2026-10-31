@@ -8,3 +8,4 @@ attachments/
 *.db
 .env
 *.log
+test-data/

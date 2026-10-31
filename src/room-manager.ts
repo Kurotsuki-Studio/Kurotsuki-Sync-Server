@@ -18,6 +18,10 @@ export class RoomManager {
     this.storage = storage;
   }
 
+  public getStorage(): StorageEngine {
+    return this.storage;
+  }
+
   public getOrCreateRoom(vaultId: string): Room {
     let room = this.rooms.get(vaultId);
     if (!room) {
@@ -92,7 +96,17 @@ export class RoomManager {
     docPath: string,
     update: Uint8Array,
     senderSession?: ClientSession
-  ): void {
+  ): boolean {
+    // RBAC: Block viewers from modifying CRDT documents
+    if (senderSession && senderSession.role === 'viewer') {
+      this.sendToSession(senderSession, {
+        type: 'error',
+        message: 'Permission denied: This vault is read-only for your account.',
+        code: 'ERR_READONLY',
+      });
+      return false;
+    }
+
     const doc = this.getOrCreateDoc(vaultId, docPath);
     Y.applyUpdate(doc, update);
 
@@ -110,6 +124,7 @@ export class RoomManager {
       },
       senderSession
     );
+    return true;
   }
 
   public updateAwareness(
@@ -132,7 +147,16 @@ export class RoomManager {
     );
   }
 
-  public broadcastFileEvent(vaultId: string, msg: WSMessage, senderSession?: ClientSession): void {
+  public broadcastFileEvent(vaultId: string, msg: WSMessage, senderSession?: ClientSession): boolean {
+    if (senderSession && senderSession.role === 'viewer') {
+      this.sendToSession(senderSession, {
+        type: 'error',
+        message: 'Permission denied: Read-only accounts cannot modify files.',
+        code: 'ERR_READONLY',
+      });
+      return false;
+    }
+
     if (msg.type === 'file_event' && msg.action === 'delete') {
       // Remove doc from memory and storage if deleted
       const room = this.rooms.get(vaultId);
@@ -140,8 +164,10 @@ export class RoomManager {
         room.docs.delete(msg.path);
       }
       this.storage.deleteDoc(vaultId, msg.path);
+      this.storage.deleteAttachment(vaultId, msg.path);
     }
     this.broadcastToRoom(vaultId, msg, senderSession);
+    return true;
   }
 
   public broadcastToRoom(
@@ -188,6 +214,35 @@ export class RoomManager {
     }, 1000);
 
     room.saveDebounceTimers.set(docPath, timer);
+  }
+
+  public getAllSessions(): ClientSession[] {
+    const sessions: ClientSession[] = [];
+    for (const room of this.rooms.values()) {
+      for (const s of room.sessions) {
+        sessions.push(s);
+      }
+    }
+    return sessions;
+  }
+
+  public getSessionsForVault(vaultId: string): ClientSession[] {
+    const room = this.rooms.get(vaultId);
+    return room ? Array.from(room.sessions) : [];
+  }
+
+  public disconnectSession(sessionId: string): boolean {
+    for (const room of this.rooms.values()) {
+      for (const session of room.sessions) {
+        if (session.id === sessionId) {
+          try {
+            session.ws.close(4003, 'Disconnected by Admin');
+          } catch {}
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   public getStats() {

@@ -1,12 +1,17 @@
 import { IncomingMessage, Server } from 'http';
-import { RawData, WebSocket, WebSocketServer } from 'ws';
 import * as Y from 'yjs';
-import { extractTokenFromRequest, verifyToken } from './auth.js';
+import { RawData, WebSocket, WebSocketServer } from 'ws';
+import { extractTokenFromRequest } from './auth.js';
 import { config } from './config.js';
+import { RbacManager } from './rbac.js';
 import { RoomManager } from './room-manager.js';
 import { ClientSession, WSMessage } from './types.js';
 
-export function setupWebSocketServer(httpServer: Server, roomManager: RoomManager): WebSocketServer {
+export function setupWebSocketServer(
+  httpServer: Server,
+  roomManager: RoomManager,
+  rbac: RbacManager
+): WebSocketServer {
   const wss = new WebSocketServer({ server: httpServer });
 
   wss.on('connection', (ws: WebSocket, req: IncomingMessage) => {
@@ -23,22 +28,33 @@ export function setupWebSocketServer(httpServer: Server, roomManager: RoomManage
         name: 'Anonymous',
         color: '#3b82f6',
       },
+      role: 'editor',
       clientId: 0,
       ip,
       connectedAt: Date.now(),
       lastPing: Date.now(),
     };
 
-    // If token in URL query is invalid, reject early
-    if (initialToken && !verifyToken(initialToken)) {
-      ws.send(JSON.stringify({
-        type: 'auth_ack',
-        success: false,
-        message: 'Invalid authentication token',
-        serverVersion: config.version,
-      }));
-      ws.close(4001, 'Unauthorized');
-      return;
+    // If token in URL query is provided and server requires auth, pre-validate
+    if (initialToken !== undefined) {
+      const parsedUrl = req.url ? new URL(req.url, 'http://localhost') : null;
+      const requestedVault = parsedUrl?.searchParams.get('vaultId') || 'default-vault';
+      const { role } = rbac.resolveRole(initialToken, requestedVault);
+
+      if (!role) {
+        ws.send(
+          JSON.stringify({
+            type: 'auth_ack',
+            success: false,
+            message: 'Invalid authentication token or forbidden vault',
+            serverVersion: config.version,
+          })
+        );
+        ws.close(4001, 'Unauthorized');
+        return;
+      }
+      session.role = role;
+      session.vaultId = requestedVault;
     }
 
     // Ping interval to verify socket liveness
@@ -55,34 +71,64 @@ export function setupWebSocketServer(httpServer: Server, roomManager: RoomManage
 
         switch (msg.type) {
           case 'auth': {
-            if (!verifyToken(msg.token)) {
-              ws.send(JSON.stringify({
-                type: 'auth_ack',
-                success: false,
-                message: 'Invalid authentication token',
-                serverVersion: config.version,
-              }));
+            const vaultId = msg.vaultId || session.vaultId || 'default-vault';
+            const { role, tokenObj } = rbac.resolveRole(msg.token, vaultId);
+
+            if (!role) {
+              ws.send(
+                JSON.stringify({
+                  type: 'auth_ack',
+                  success: false,
+                  message: 'Invalid authentication token or forbidden vault access',
+                  serverVersion: config.version,
+                })
+              );
               ws.close(4001, 'Unauthorized');
               return;
             }
 
-            session.vaultId = msg.vaultId || 'default-vault';
+            session.vaultId = vaultId;
+            session.role = role;
             if (msg.clientInfo) {
               session.user = msg.clientInfo;
             }
 
             roomManager.joinRoom(session.vaultId, session);
 
-            ws.send(JSON.stringify({
-              type: 'auth_ack',
-              success: true,
-              serverVersion: config.version,
-            }));
+            rbac.addActivityLog({
+              type: 'join',
+              vaultId: session.vaultId,
+              userName: session.user.name,
+              details: `User "${session.user.name}" connected with role [${session.role}]`,
+            });
+
+            ws.send(
+              JSON.stringify({
+                type: 'auth_ack',
+                success: true,
+                role: session.role,
+                vaultId: session.vaultId,
+                serverVersion: config.version,
+              })
+            );
             break;
           }
 
           case 'yjs_sync': {
             if (!msg.path || !msg.update) return;
+
+            // RBAC check
+            if (session.role === 'viewer') {
+              ws.send(
+                JSON.stringify({
+                  type: 'error',
+                  message: 'Vault is read-only for your account. Changes not applied.',
+                  code: 'ERR_READONLY',
+                })
+              );
+              return;
+            }
+
             const updateBuf = Buffer.from(msg.update, 'base64');
             roomManager.applyUpdate(session.vaultId, msg.path, new Uint8Array(updateBuf), session);
             break;
@@ -92,6 +138,9 @@ export function setupWebSocketServer(httpServer: Server, roomManager: RoomManage
             if (Array.isArray(msg.states)) {
               for (const state of msg.states) {
                 session.clientId = state.clientId;
+                if (state.activeFile !== undefined) {
+                  session.activeFile = state.activeFile;
+                }
               }
               roomManager.updateAwareness(session.vaultId, msg.states, session);
             }
@@ -99,23 +148,55 @@ export function setupWebSocketServer(httpServer: Server, roomManager: RoomManage
           }
 
           case 'file_event': {
+            // RBAC check
+            if (session.role === 'viewer') {
+              ws.send(
+                JSON.stringify({
+                  type: 'error',
+                  message: 'Vault is read-only: File modification events are blocked.',
+                  code: 'ERR_READONLY',
+                })
+              );
+              return;
+            }
+
             roomManager.broadcastFileEvent(session.vaultId, msg, session);
             break;
           }
 
           case 'file_list_request': {
-            const files = roomManager.getOrCreateRoom(session.vaultId);
-            // Storage file listing can be queried if needed
-            ws.send(JSON.stringify({
-              type: 'file_list_response',
-              files: [],
-            }));
+            const files = roomManager.getStorage().listAllFiles(session.vaultId);
+            ws.send(
+              JSON.stringify({
+                type: 'file_list_response',
+                files,
+              })
+            );
+            break;
+          }
+
+          case 'doc_request': {
+            if (!msg.path) return;
+            const doc = roomManager.getOrCreateDoc(session.vaultId, msg.path);
+            const state = Y.encodeStateAsUpdate(doc);
+            ws.send(
+              JSON.stringify({
+                type: 'doc_response',
+                path: msg.path,
+                update: Buffer.from(state).toString('base64'),
+              })
+            );
             break;
           }
 
           case 'ping': {
             session.lastPing = Date.now();
-            ws.send(JSON.stringify({ type: 'pong' }));
+            ws.send(
+              JSON.stringify({
+                type: 'pong',
+                timestamp: msg.timestamp || Date.now(),
+              })
+            );
             break;
           }
 
@@ -135,6 +216,12 @@ export function setupWebSocketServer(httpServer: Server, roomManager: RoomManage
     ws.on('close', () => {
       clearInterval(pingInterval);
       roomManager.leaveRoom(session);
+      rbac.addActivityLog({
+        type: 'leave',
+        vaultId: session.vaultId,
+        userName: session.user.name,
+        details: `User "${session.user.name}" disconnected`,
+      });
     });
 
     ws.on('error', (err) => {
