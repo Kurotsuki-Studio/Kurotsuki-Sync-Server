@@ -95,7 +95,8 @@ export class RoomManager {
     vaultId: string,
     docPath: string,
     update: Uint8Array,
-    senderSession?: ClientSession
+    senderSession?: ClientSession,
+    b64Update?: string
   ): boolean {
     // RBAC: Block viewers from modifying CRDT documents
     if (senderSession && senderSession.role === 'viewer') {
@@ -113,8 +114,8 @@ export class RoomManager {
     // Schedule debounced save to storage
     this.scheduleDocSave(vaultId, docPath, doc);
 
-    // Broadcast to other peers in room
-    const b64 = Buffer.from(update).toString('base64');
+    // Broadcast to other peers in room (use existing b64 without re-encoding if available)
+    const b64 = b64Update || Buffer.from(update).toString('base64');
     this.broadcastToRoom(
       vaultId,
       {

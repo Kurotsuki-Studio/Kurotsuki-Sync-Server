@@ -130,7 +130,7 @@ export function setupWebSocketServer(
             }
 
             const updateBuf = Buffer.from(msg.update, 'base64');
-            roomManager.applyUpdate(session.vaultId, msg.path, new Uint8Array(updateBuf), session);
+            roomManager.applyUpdate(session.vaultId, msg.path, new Uint8Array(updateBuf), session, msg.update);
             break;
           }
 
