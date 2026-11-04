@@ -88,7 +88,21 @@ export class StorageEngine {
   public saveDoc(vaultId: string, docPath: string, doc: Y.Doc): void {
     const filePath = this.getDocFilePath(vaultId, docPath);
     try {
-      const state = Y.encodeStateAsUpdate(doc);
+      let state = Y.encodeStateAsUpdate(doc);
+
+      // Auto-compaction: if state grows over 64 KB, compact to purge accumulated deletion/insertion tombstones
+      if (state.length > 64 * 1024) {
+        try {
+          const text = doc.getText('content').toString();
+          const cleanDoc = new Y.Doc();
+          cleanDoc.getText('content').insert(0, text);
+          state = Y.encodeStateAsUpdate(cleanDoc);
+          cleanDoc.destroy();
+        } catch {
+          // Fallback to original state if text extraction fails
+        }
+      }
+
       fs.writeFileSync(filePath, Buffer.from(state));
 
       const index = this.getDocIndex(vaultId);
@@ -97,6 +111,45 @@ export class StorageEngine {
     } catch (err) {
       console.error(`[Storage] Failed to write YDoc to ${filePath}:`, err);
     }
+  }
+
+  public compactVault(vaultId: string): { beforeBytes: number; afterBytes: number; compactedCount: number } {
+    const vaultDir = this.getVaultDir(vaultId);
+    const docsDir = path.join(vaultDir, 'docs');
+    let beforeBytes = 0;
+    let afterBytes = 0;
+    let compactedCount = 0;
+
+    if (fs.existsSync(docsDir)) {
+      const entries = fs.readdirSync(docsDir);
+      for (const entry of entries) {
+        if (!entry.endsWith('.ydoc')) continue;
+        const filePath = path.join(docsDir, entry);
+        try {
+          const stat = fs.statSync(filePath);
+          beforeBytes += stat.size;
+
+          const data = fs.readFileSync(filePath);
+          const doc = new Y.Doc();
+          Y.applyUpdate(doc, new Uint8Array(data));
+
+          const text = doc.getText('content').toString();
+          const cleanDoc = new Y.Doc();
+          cleanDoc.getText('content').insert(0, text);
+          const compacted = Y.encodeStateAsUpdate(cleanDoc);
+
+          fs.writeFileSync(filePath, Buffer.from(compacted));
+          afterBytes += compacted.length;
+          compactedCount++;
+
+          doc.destroy();
+          cleanDoc.destroy();
+        } catch (e) {
+          console.error(`[Storage] Failed to compact ${filePath}:`, e);
+        }
+      }
+    }
+    return { beforeBytes, afterBytes, compactedCount };
   }
 
   public deleteDoc(vaultId: string, docPath: string): void {

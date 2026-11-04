@@ -22,7 +22,21 @@ export function createServer() {
 
 // Start standalone if invoked directly
 if (process.env.NODE_ENV !== 'test') {
-  const { httpServer } = createServer();
+  const { httpServer, rbac, storage } = createServer();
+
+  // Startup auto-compaction: shrink bloated CRDT logs down to slim clean state
+  try {
+    const vaults = rbac.getVaults();
+    for (const v of vaults) {
+      const res = storage.compactVault(v.id);
+      if (res.compactedCount > 0 && res.beforeBytes > res.afterBytes) {
+        const savedMB = ((res.beforeBytes - res.afterBytes) / (1024 * 1024)).toFixed(2);
+        console.log(`🧹 [Storage] Auto-compacted vault "${v.id}": reclaimed ${savedMB} MB across ${res.compactedCount} documents`);
+      }
+    }
+  } catch (e) {
+    console.error('[Storage] Error during startup compaction:', e);
+  }
 
   httpServer.listen(config.port, config.host, () => {
     console.log(`🌙 Kurotsuki Sync Relay Server v${config.version}`);
