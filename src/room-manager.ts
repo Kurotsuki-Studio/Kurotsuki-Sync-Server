@@ -2,6 +2,11 @@ import * as Y from 'yjs';
 import { StorageEngine } from './storage.js';
 import { ClientSession, PeerAwarenessState, WSMessage } from './types.js';
 
+export function normalizeDocPath(path: string | null | undefined): string {
+  if (!path) return '';
+  return path.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+}
+
 interface Room {
   vaultId: string;
   sessions: Set<ClientSession>;
@@ -81,12 +86,13 @@ export class RoomManager {
   }
 
   public getOrCreateDoc(vaultId: string, docPath: string): Y.Doc {
+    const cleanPath = normalizeDocPath(docPath);
     const room = this.getOrCreateRoom(vaultId);
-    let doc = room.docs.get(docPath);
+    let doc = room.docs.get(cleanPath);
     if (!doc) {
       doc = new Y.Doc();
-      this.storage.loadDoc(vaultId, docPath, doc);
-      room.docs.set(docPath, doc);
+      this.storage.loadDoc(vaultId, cleanPath, doc);
+      room.docs.set(cleanPath, doc);
     }
     return doc;
   }
@@ -98,6 +104,7 @@ export class RoomManager {
     senderSession?: ClientSession,
     b64Update?: string
   ): boolean {
+    const cleanPath = normalizeDocPath(docPath);
     // RBAC: Block viewers from modifying CRDT documents
     if (senderSession && senderSession.role === 'viewer') {
       this.sendToSession(senderSession, {
@@ -108,11 +115,11 @@ export class RoomManager {
       return false;
     }
 
-    const doc = this.getOrCreateDoc(vaultId, docPath);
+    const doc = this.getOrCreateDoc(vaultId, cleanPath);
     Y.applyUpdate(doc, update);
 
     // Schedule debounced save to storage
-    this.scheduleDocSave(vaultId, docPath, doc);
+    this.scheduleDocSave(vaultId, cleanPath, doc);
 
     // Broadcast to other peers in room (use existing b64 without re-encoding if available)
     const b64 = b64Update || Buffer.from(update).toString('base64');
@@ -120,7 +127,7 @@ export class RoomManager {
       vaultId,
       {
         type: 'yjs_sync',
-        path: docPath,
+        path: cleanPath,
         update: b64,
       },
       senderSession
@@ -135,6 +142,9 @@ export class RoomManager {
   ): void {
     const room = this.getOrCreateRoom(vaultId);
     for (const state of states) {
+      if (state.activeFile) {
+        state.activeFile = normalizeDocPath(state.activeFile);
+      }
       room.awareness.set(state.clientId, state);
     }
 

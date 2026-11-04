@@ -35,18 +35,20 @@ export class StorageEngine {
   }
 
   private getDocFilePath(vaultId: string, docPath: string): string {
+    const cleanDocPath = docPath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
     const vaultDir = this.getVaultDir(vaultId);
     const docsDir = path.join(vaultDir, 'docs');
     this.ensureDir(docsDir);
 
-    // Hash or sanitize docPath to prevent filesystem traversal while keeping human readable prefix
-    const hash = crypto.createHash('sha256').update(docPath).digest('hex').substring(0, 16);
-    const safeName = docPath.replace(/[^a-zA-Z0-9_\-\.]/g, '_').substring(0, 40);
+    // Hash or sanitize cleanDocPath to prevent filesystem traversal while keeping human readable prefix
+    const hash = crypto.createHash('sha256').update(cleanDocPath).digest('hex').substring(0, 16);
+    const safeName = cleanDocPath.replace(/[^a-zA-Z0-9_\-\.]/g, '_').substring(0, 40);
     return path.join(docsDir, `${safeName}_${hash}.ydoc`);
   }
 
   public loadDoc(vaultId: string, docPath: string, doc: Y.Doc): boolean {
-    const filePath = this.getDocFilePath(vaultId, docPath);
+    const cleanDocPath = docPath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    const filePath = this.getDocFilePath(vaultId, cleanDocPath);
     if (fs.existsSync(filePath)) {
       try {
         const data = fs.readFileSync(filePath);
@@ -86,27 +88,14 @@ export class StorageEngine {
   }
 
   public saveDoc(vaultId: string, docPath: string, doc: Y.Doc): void {
-    const filePath = this.getDocFilePath(vaultId, docPath);
+    const cleanDocPath = docPath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    const filePath = this.getDocFilePath(vaultId, cleanDocPath);
     try {
-      let state = Y.encodeStateAsUpdate(doc);
-
-      // Auto-compaction: if state grows over 64 KB, compact to purge accumulated deletion/insertion tombstones
-      if (state.length > 64 * 1024) {
-        try {
-          const text = doc.getText('content').toString();
-          const cleanDoc = new Y.Doc();
-          cleanDoc.getText('content').insert(0, text);
-          state = Y.encodeStateAsUpdate(cleanDoc);
-          cleanDoc.destroy();
-        } catch {
-          // Fallback to original state if text extraction fails
-        }
-      }
-
+      const state = Y.encodeStateAsUpdate(doc);
       fs.writeFileSync(filePath, Buffer.from(state));
 
       const index = this.getDocIndex(vaultId);
-      index[docPath] = { path: docPath, mtime: Date.now() };
+      index[cleanDocPath] = { path: cleanDocPath, mtime: Date.now() };
       this.saveDocIndex(vaultId, index);
     } catch (err) {
       console.error(`[Storage] Failed to write YDoc to ${filePath}:`, err);
@@ -133,17 +122,12 @@ export class StorageEngine {
           const doc = new Y.Doc();
           Y.applyUpdate(doc, new Uint8Array(data));
 
-          const text = doc.getText('content').toString();
-          const cleanDoc = new Y.Doc();
-          cleanDoc.getText('content').insert(0, text);
-          const compacted = Y.encodeStateAsUpdate(cleanDoc);
-
+          const compacted = Y.encodeStateAsUpdate(doc);
           fs.writeFileSync(filePath, Buffer.from(compacted));
           afterBytes += compacted.length;
           compactedCount++;
 
           doc.destroy();
-          cleanDoc.destroy();
         } catch (e) {
           console.error(`[Storage] Failed to compact ${filePath}:`, e);
         }
@@ -153,17 +137,18 @@ export class StorageEngine {
   }
 
   public deleteDoc(vaultId: string, docPath: string): void {
-    const filePath = this.getDocFilePath(vaultId, docPath);
+    const cleanDocPath = docPath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    const filePath = this.getDocFilePath(vaultId, cleanDocPath);
     if (fs.existsSync(filePath)) {
       try {
         fs.unlinkSync(filePath);
-      } catch (err) {
-        console.error(`[Storage] Failed to delete YDoc ${filePath}:`, err);
+      } catch (e) {
+        console.error(`[Storage] Failed to delete doc file ${filePath}:`, e);
       }
     }
     const index = this.getDocIndex(vaultId);
-    if (index[docPath]) {
-      delete index[docPath];
+    if (index[cleanDocPath]) {
+      delete index[cleanDocPath];
       this.saveDocIndex(vaultId, index);
     }
   }
