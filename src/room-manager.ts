@@ -4,7 +4,7 @@ import { ClientSession, PeerAwarenessState, WSMessage } from './types.js';
 
 export function normalizeDocPath(path: string | null | undefined): string {
   if (!path) return '';
-  return path.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  return path.normalize('NFC').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
 }
 
 interface Room {
@@ -168,14 +168,33 @@ export class RoomManager {
       return false;
     }
 
-    if (msg.type === 'file_event' && msg.action === 'delete') {
-      // Remove doc from memory and storage if deleted
+    if (msg.type === 'file_event') {
+      const cleanPath = normalizeDocPath(msg.path);
+      const cleanOldPath = msg.oldPath ? normalizeDocPath(msg.oldPath) : undefined;
       const room = this.rooms.get(vaultId);
-      if (room) {
-        room.docs.delete(msg.path);
+
+      if (msg.action === 'delete') {
+        if (room) {
+          room.docs.delete(cleanPath);
+        }
+        this.storage.deleteDoc(vaultId, cleanPath);
+        this.storage.deleteAttachment(vaultId, cleanPath);
+      } else if (msg.action === 'rename' && cleanOldPath) {
+        if (room) {
+          const doc = room.docs.get(cleanOldPath);
+          if (doc) {
+            room.docs.delete(cleanOldPath);
+            room.docs.set(cleanPath, doc);
+          }
+        }
+        this.storage.renameDoc(vaultId, cleanOldPath, cleanPath);
+        this.storage.renameAttachment(vaultId, cleanOldPath, cleanPath);
       }
-      this.storage.deleteDoc(vaultId, msg.path);
-      this.storage.deleteAttachment(vaultId, msg.path);
+
+      msg.path = cleanPath;
+      if (cleanOldPath) {
+        msg.oldPath = cleanOldPath;
+      }
     }
     this.broadcastToRoom(vaultId, msg, senderSession);
     return true;

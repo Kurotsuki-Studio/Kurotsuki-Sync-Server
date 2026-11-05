@@ -34,8 +34,13 @@ export class StorageEngine {
     return vaultDir;
   }
 
+  public cleanPath(docPath: string): string {
+    if (!docPath) return '';
+    return docPath.normalize('NFC').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  }
+
   private getDocFilePath(vaultId: string, docPath: string): string {
-    const cleanDocPath = docPath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    const cleanDocPath = this.cleanPath(docPath);
     const vaultDir = this.getVaultDir(vaultId);
     const docsDir = path.join(vaultDir, 'docs');
     this.ensureDir(docsDir);
@@ -47,7 +52,7 @@ export class StorageEngine {
   }
 
   public loadDoc(vaultId: string, docPath: string, doc: Y.Doc): boolean {
-    const cleanDocPath = docPath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    const cleanDocPath = this.cleanPath(docPath);
     const filePath = this.getDocFilePath(vaultId, cleanDocPath);
     if (fs.existsSync(filePath)) {
       try {
@@ -88,7 +93,7 @@ export class StorageEngine {
   }
 
   public saveDoc(vaultId: string, docPath: string, doc: Y.Doc): void {
-    const cleanDocPath = docPath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    const cleanDocPath = this.cleanPath(docPath);
     const filePath = this.getDocFilePath(vaultId, cleanDocPath);
     try {
       const state = Y.encodeStateAsUpdate(doc);
@@ -137,7 +142,7 @@ export class StorageEngine {
   }
 
   public deleteDoc(vaultId: string, docPath: string): void {
-    const cleanDocPath = docPath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    const cleanDocPath = this.cleanPath(docPath);
     const filePath = this.getDocFilePath(vaultId, cleanDocPath);
     if (fs.existsSync(filePath)) {
       try {
@@ -149,6 +154,35 @@ export class StorageEngine {
     const index = this.getDocIndex(vaultId);
     if (index[cleanDocPath]) {
       delete index[cleanDocPath];
+      this.saveDocIndex(vaultId, index);
+    }
+  }
+
+  public renameDoc(vaultId: string, oldDocPath: string, newDocPath: string): void {
+    const cleanOld = this.cleanPath(oldDocPath);
+    const cleanNew = this.cleanPath(newDocPath);
+    if (!cleanOld || !cleanNew || cleanOld === cleanNew) return;
+
+    const oldFilePath = this.getDocFilePath(vaultId, cleanOld);
+    const newFilePath = this.getDocFilePath(vaultId, cleanNew);
+
+    if (fs.existsSync(oldFilePath)) {
+      try {
+        fs.renameSync(oldFilePath, newFilePath);
+      } catch (e) {
+        try {
+          fs.copyFileSync(oldFilePath, newFilePath);
+          fs.unlinkSync(oldFilePath);
+        } catch (err2) {
+          console.error(`[Storage] Failed to rename doc file ${oldFilePath} to ${newFilePath}:`, err2);
+        }
+      }
+    }
+
+    const index = this.getDocIndex(vaultId);
+    if (index[cleanOld]) {
+      delete index[cleanOld];
+      index[cleanNew] = { path: cleanNew, mtime: Date.now() };
       this.saveDocIndex(vaultId, index);
     }
   }
@@ -206,6 +240,22 @@ export class StorageEngine {
         return true;
       } catch (err) {
         console.error(`[Storage] Failed to delete attachment ${targetPath}:`, err);
+      }
+    }
+    return false;
+  }
+
+  public renameAttachment(vaultId: string, oldPath: string, newPath: string): boolean {
+    const oldTarget = this.getAttachmentPath(vaultId, oldPath);
+    const newTarget = this.getAttachmentPath(vaultId, newPath);
+
+    if (fs.existsSync(oldTarget)) {
+      try {
+        this.ensureDir(path.dirname(newTarget));
+        fs.renameSync(oldTarget, newTarget);
+        return true;
+      } catch (e) {
+        console.error(`[Storage] Failed to rename attachment ${oldTarget} to ${newTarget}:`, e);
       }
     }
     return false;
