@@ -8,5 +8,5 @@ export const config: ServerConfig = {
   authToken: process.env.AUTH_TOKEN || '',
   maxPayloadMB: parseInt(process.env.MAX_PAYLOAD_MB || '50', 10),
   corsEnabled: process.env.CORS_ENABLED !== 'false',
-  version: '1.2.0',
+  version: '1.2.1',
 };

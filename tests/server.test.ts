@@ -431,6 +431,16 @@ describe('Kurotsuki Sync Relay Server', () => {
     assert.strictEqual(createRes.status, 201);
     const friendToken = await createRes.json();
 
+    // Non-admin second user can verify their own token via /api/v1/auth/whoami
+    const whoamiRes = await fetch(`${baseUrl}/api/v1/auth/whoami?vaultId=default-vault`, {
+      headers: { Authorization: `Bearer ${friendToken.token}` },
+    });
+    assert.strictEqual(whoamiRes.status, 200);
+    const whoami = await whoamiRes.json();
+    assert.strictEqual(whoami.valid, true);
+    assert.strictEqual(whoami.role, 'editor');
+    assert.strictEqual(whoami.accountName, 'Friend Alex');
+
     // Connect Alex via WebSocket
     const wsFriend = new WebSocket(wsUrl);
     await new Promise<void>((resolve) => wsFriend.on('open', resolve));

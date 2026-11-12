@@ -91,6 +91,27 @@ export function handleHttpRequest(
     return;
   }
 
+  // 2c. Whoami endpoint for Obsidian plugin (works for BOTH admin and second-user tokens)
+  if (pathname === '/api/v1/auth/whoami' && req.method === 'GET') {
+    const token = extractTokenFromRequest(req);
+    const vaultId = parsedUrl.searchParams.get('vaultId') || 'default-vault';
+    const { role, tokenObj } = rbac.resolveRole(token, vaultId);
+    if (!role) {
+      sendJson(res, 401, { valid: false, error: 'Invalid token or forbidden vault access' });
+      return;
+    }
+    sendJson(res, 200, {
+      valid: true,
+      isAdmin: role === 'admin' || rbac.isAdmin(token),
+      role,
+      accountName: tokenObj ? tokenObj.name : (role === 'admin' ? 'Server Admin' : 'Guest'),
+      tokenId: tokenObj?.id || null,
+      vaultId,
+      version: config.version,
+    });
+    return;
+  }
+
   // 3. Server stats
   if (pathname === '/api/v1/stats') {
     const token = extractTokenFromRequest(req);

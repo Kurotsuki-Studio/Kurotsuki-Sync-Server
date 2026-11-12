@@ -1,6 +1,6 @@
 {
   "name": "kurotsuki-sync-server",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Self-hosted cloud relay and CRDT synchronization server for Kurotsuki Sync (Obsidian Relay alternative)",
   "main": "dist/index.js",
   "scripts": {
