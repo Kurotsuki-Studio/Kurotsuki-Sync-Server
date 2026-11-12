@@ -60,7 +60,7 @@ describe('Kurotsuki Sync Relay Server', () => {
     const html = await res.text();
     assert.ok(html.includes('Kurotsuki Sync'));
     assert.ok(html.includes('Web Admin Panel'));
-    assert.ok(html.includes('Multi-Vault & Room Management'));
+    assert.ok(html.includes('Multi-Vault &amp; Room Management'));
   });
 
   test('Authentication: verifyToken validates correct and incorrect tokens', () => {
@@ -399,5 +399,104 @@ describe('Kurotsuki Sync Relay Server', () => {
     assert.strictEqual(errorMsg.code, 'ERR_READONLY');
 
     wsViewer.close();
+  });
+
+  test('Second users: per-vault access sync, live role update, and token revocation disconnect', async () => {
+    // Verify /api/v1/auth/verify
+    const unauthVerify = await fetch(`${baseUrl}/api/v1/auth/verify`);
+    assert.strictEqual(unauthVerify.status, 200);
+    const unauthData = await unauthVerify.json();
+    assert.strictEqual(unauthData.authRequired, true);
+    assert.strictEqual(unauthData.authenticated, false);
+
+    const authVerify = await fetch(`${baseUrl}/api/v1/auth/verify`, {
+      headers: { Authorization: 'Bearer test-secret-token' },
+    });
+    const authData = await authVerify.json();
+    assert.strictEqual(authData.authenticated, true);
+
+    // Create a second user token
+    const createRes = await fetch(`${baseUrl}/api/v1/tokens`, {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer test-secret-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: 'Friend Alex',
+        role: 'editor',
+        vaultAccess: { 'default-vault': 'editor' },
+      }),
+    });
+    assert.strictEqual(createRes.status, 201);
+    const friendToken = await createRes.json();
+
+    // Connect Alex via WebSocket
+    const wsFriend = new WebSocket(wsUrl);
+    await new Promise<void>((resolve) => wsFriend.on('open', resolve));
+
+    const firstAck = new Promise<any>((resolve) => {
+      wsFriend.once('message', (raw) => resolve(JSON.parse(raw.toString())));
+    });
+    wsFriend.send(
+      JSON.stringify({
+        type: 'auth',
+        token: friendToken.token,
+        vaultId: 'default-vault',
+        clientInfo: { id: 'alex1', name: 'Alex', color: '#10b981' },
+      })
+    );
+    const ack1 = await firstAck;
+    assert.strictEqual(ack1.success, true);
+    assert.strictEqual(ack1.role, 'editor');
+
+    // Admin downgrades Alex to viewer on default-vault via /api/v1/vaults/:vaultId/access
+    const roleUpdatePromise = new Promise<any>((resolve) => {
+      wsFriend.once('message', (raw) => resolve(JSON.parse(raw.toString())));
+    });
+    const accessRes = await fetch(`${baseUrl}/api/v1/vaults/default-vault/access`, {
+      method: 'PUT',
+      headers: {
+        Authorization: 'Bearer test-secret-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ tokenId: friendToken.id, access: 'viewer' }),
+    });
+    assert.strictEqual(accessRes.status, 200);
+    const ack2 = await roleUpdatePromise;
+    assert.strictEqual(ack2.type, 'auth_ack');
+    assert.strictEqual(ack2.role, 'viewer');
+
+    // Admin revokes Alex's token -> active WS should close immediately with 4001
+    const closePromise = new Promise<number>((resolve) => {
+      wsFriend.once('close', (code) => resolve(code));
+    });
+    const delRes = await fetch(`${baseUrl}/api/v1/tokens/${friendToken.id}`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer test-secret-token' },
+    });
+    assert.strictEqual(delRes.status, 200);
+    const delBody = await delRes.json();
+    assert.strictEqual(delBody.disconnectedSessions, 1);
+    const closeCode = await closePromise;
+    assert.strictEqual(closeCode, 4001);
+  });
+
+  test('WebSocket: blocks unauthenticated yjs_sync when AUTH_TOKEN is set', async () => {
+    const wsAnon = new WebSocket(wsUrl);
+    await new Promise<void>((resolve) => wsAnon.on('open', resolve));
+
+    const closePromise = new Promise<number>((resolve) => {
+      wsAnon.once('close', (code) => resolve(code));
+    });
+    wsAnon.send(
+      JSON.stringify({
+        type: 'yjs_sync',
+        path: 'notes/hack.md',
+        update: 'AQID',
+      })
+    );
+    const closeCode = await closePromise;
+    assert.strictEqual(closeCode, 4001);
   });
 });

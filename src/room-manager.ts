@@ -1,4 +1,5 @@
 import * as Y from 'yjs';
+import { RbacManager } from './rbac.js';
 import { StorageEngine } from './storage.js';
 import { ClientSession, PeerAwarenessState, WSMessage } from './types.js';
 
@@ -273,6 +274,62 @@ export class RoomManager {
       }
     }
     return false;
+  }
+
+  public disconnectByTokenId(tokenId: string): number {
+    let count = 0;
+    for (const room of this.rooms.values()) {
+      for (const session of Array.from(room.sessions)) {
+        if (session.tokenId === tokenId) {
+          try {
+            this.sendToSession(session, {
+              type: 'error',
+              message: 'Your access token has been revoked or regenerated.',
+              code: 'ERR_TOKEN_REVOKED',
+            });
+            session.ws.close(4001, 'Token revoked');
+            count++;
+          } catch {}
+        }
+      }
+    }
+    return count;
+  }
+
+  public refreshSessionsForToken(tokenId: string, rbac: RbacManager, serverVersion = '1.2.0'): void {
+    const tokenObj = rbac.getTokenById(tokenId);
+    if (!tokenObj) {
+      this.disconnectByTokenId(tokenId);
+      return;
+    }
+
+    for (const room of this.rooms.values()) {
+      for (const session of Array.from(room.sessions)) {
+        if (session.tokenId === tokenId) {
+          session.tokenName = tokenObj.name;
+          const { role } = rbac.resolveRole(tokenObj.token, session.vaultId);
+          if (!role) {
+            try {
+              this.sendToSession(session, {
+                type: 'error',
+                message: `Access to vault "${session.vaultId}" has been revoked.`,
+                code: 'ERR_FORBIDDEN',
+              });
+              session.ws.close(4001, 'Forbidden');
+            } catch {}
+          } else if (role !== session.role) {
+            session.role = role;
+            this.sendToSession(session, {
+              type: 'auth_ack',
+              success: true,
+              role,
+              vaultId: session.vaultId,
+              serverVersion,
+            });
+          }
+        }
+      }
+    }
   }
 
   public getStats() {

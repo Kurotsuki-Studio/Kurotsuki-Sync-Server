@@ -142,7 +142,19 @@ export class RbacManager {
     if (updates.description !== undefined) vault.description = updates.description;
     if (updates.quotaMB !== undefined && updates.quotaMB > 0) vault.quotaMB = updates.quotaMB;
     if (updates.defaultRole !== undefined) vault.defaultRole = updates.defaultRole;
-    if (updates.tokenRoles !== undefined) vault.tokenRoles = updates.tokenRoles;
+    if (updates.tokenRoles !== undefined) {
+      vault.tokenRoles = { ...updates.tokenRoles };
+      // Sync into token.vaultAccess so both sides remain consistent
+      for (const tokenObj of Object.values(this.data.tokens)) {
+        if (!tokenObj.vaultAccess) tokenObj.vaultAccess = {};
+        const roleForVault = vault.tokenRoles[tokenObj.id];
+        if (roleForVault) {
+          tokenObj.vaultAccess[id] = roleForVault;
+        } else {
+          delete tokenObj.vaultAccess[id];
+        }
+      }
+    }
 
     this.addActivityLog({
       type: 'vault_update',
@@ -160,6 +172,12 @@ export class RbacManager {
     if (!this.data.vaults[id]) return false;
 
     delete this.data.vaults[id];
+    // Clean up per-vault overrides on all tokens
+    for (const tokenObj of Object.values(this.data.tokens)) {
+      if (tokenObj.vaultAccess && id in tokenObj.vaultAccess) {
+        delete tokenObj.vaultAccess[id];
+      }
+    }
     this.addActivityLog({
       type: 'vault_delete',
       vaultId: id,
@@ -186,16 +204,42 @@ export class RbacManager {
     const id = 'tok_' + crypto.randomBytes(4).toString('hex');
     const tokenSecret = opts.token?.trim() || 'kuro_' + crypto.randomBytes(16).toString('hex');
 
+    if (config.authToken && tokenSecret === config.authToken) {
+      throw new Error('Token secret cannot match the server master AUTH_TOKEN');
+    }
+    const duplicate = Object.values(this.data.tokens).find((t) => t.token === tokenSecret);
+    if (duplicate) {
+      throw new Error(`Token secret already in use by "${duplicate.name}"`);
+    }
+
+    const cleanVaultAccess: Record<string, UserRole | 'forbidden'> = {};
+    if (opts.vaultAccess) {
+      for (const [vId, access] of Object.entries(opts.vaultAccess)) {
+        if (access && (access as string) !== 'inherit') {
+          cleanVaultAccess[vId] = access;
+        }
+      }
+    }
+
     const tokenObj: AuthToken = {
       id,
       token: tokenSecret,
       name: opts.name.trim() || 'Unnamed Token',
       role: opts.role,
-      vaultAccess: opts.vaultAccess || {},
+      vaultAccess: cleanVaultAccess,
       createdAt: Date.now(),
     };
 
     this.data.tokens[id] = tokenObj;
+    // Sync into vault.tokenRoles
+    for (const [vId, access] of Object.entries(cleanVaultAccess)) {
+      const vault = this.data.vaults[vId];
+      if (vault) {
+        if (!vault.tokenRoles) vault.tokenRoles = {};
+        vault.tokenRoles[id] = access;
+      }
+    }
+
     this.addActivityLog({
       type: 'token_create',
       details: `Created token "${tokenObj.name}" with global role ${tokenObj.role}`,
@@ -204,7 +248,7 @@ export class RbacManager {
     return tokenObj;
   }
 
-  public updateToken(id: string, updates: Partial<AuthToken>): AuthToken {
+  public updateToken(id: string, updates: Partial<AuthToken> & { regenerate?: boolean }): AuthToken {
     const tokenObj = this.data.tokens[id];
     if (!tokenObj) {
       throw new Error(`Token "${id}" not found`);
@@ -212,8 +256,80 @@ export class RbacManager {
 
     if (updates.name !== undefined) tokenObj.name = updates.name.trim() || tokenObj.name;
     if (updates.role !== undefined) tokenObj.role = updates.role;
-    if (updates.vaultAccess !== undefined) tokenObj.vaultAccess = updates.vaultAccess;
+    if (updates.regenerate) {
+      tokenObj.token = 'kuro_' + crypto.randomBytes(16).toString('hex');
+    } else if (updates.token !== undefined && updates.token.trim()) {
+      const nextSecret = updates.token.trim();
+      if (config.authToken && nextSecret === config.authToken) {
+        throw new Error('Token secret cannot match the server master AUTH_TOKEN');
+      }
+      const duplicate = Object.values(this.data.tokens).find((t) => t.id !== id && t.token === nextSecret);
+      if (duplicate) {
+        throw new Error(`Token secret already in use by "${duplicate.name}"`);
+      }
+      tokenObj.token = nextSecret;
+    }
 
+    if (updates.vaultAccess !== undefined) {
+      const cleanVaultAccess: Record<string, UserRole | 'forbidden'> = {};
+      for (const [vId, access] of Object.entries(updates.vaultAccess)) {
+        if (access && (access as string) !== 'inherit') {
+          cleanVaultAccess[vId] = access;
+        }
+      }
+      tokenObj.vaultAccess = cleanVaultAccess;
+
+      // Sync vault.tokenRoles across all vaults
+      for (const vault of Object.values(this.data.vaults)) {
+        if (!vault.tokenRoles) vault.tokenRoles = {};
+        if (cleanVaultAccess[vault.id]) {
+          vault.tokenRoles[id] = cleanVaultAccess[vault.id];
+        } else {
+          delete vault.tokenRoles[id];
+        }
+      }
+    }
+
+    this.addActivityLog({
+      type: 'token_update',
+      userName: tokenObj.name,
+      details: `Updated permissions for "${tokenObj.name}" (global role: ${tokenObj.role})`,
+    });
+    this.saveData();
+    return tokenObj;
+  }
+
+  public setVaultAccessForToken(
+    vaultId: string,
+    tokenId: string,
+    access: UserRole | 'forbidden' | 'inherit'
+  ): AuthToken {
+    const vault = this.data.vaults[vaultId];
+    if (!vault) {
+      throw new Error(`Vault "${vaultId}" not found`);
+    }
+    const tokenObj = this.data.tokens[tokenId];
+    if (!tokenObj) {
+      throw new Error(`Token "${tokenId}" not found`);
+    }
+
+    if (!tokenObj.vaultAccess) tokenObj.vaultAccess = {};
+    if (!vault.tokenRoles) vault.tokenRoles = {};
+
+    if (access === 'inherit') {
+      delete tokenObj.vaultAccess[vaultId];
+      delete vault.tokenRoles[tokenId];
+    } else {
+      tokenObj.vaultAccess[vaultId] = access;
+      vault.tokenRoles[tokenId] = access;
+    }
+
+    this.addActivityLog({
+      type: 'role_change',
+      vaultId,
+      userName: tokenObj.name,
+      details: `Set "${tokenObj.name}" access on vault "${vaultId}" to [${access}]`,
+    });
     this.saveData();
     return tokenObj;
   }
@@ -222,8 +338,15 @@ export class RbacManager {
     if (!this.data.tokens[id]) return false;
     const name = this.data.tokens[id].name;
     delete this.data.tokens[id];
+    // Clean up vault.tokenRoles references
+    for (const vault of Object.values(this.data.vaults)) {
+      if (vault.tokenRoles && id in vault.tokenRoles) {
+        delete vault.tokenRoles[id];
+      }
+    }
     this.addActivityLog({
       type: 'token_delete',
+      userName: name,
       details: `Revoked token "${name}"`,
     });
     this.saveData();

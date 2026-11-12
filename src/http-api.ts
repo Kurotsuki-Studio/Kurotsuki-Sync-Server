@@ -78,6 +78,19 @@ export function handleHttpRequest(
     return rbac.isAdmin(token);
   };
 
+  // 2b. Verify auth status cleanly (no 401 spam)
+  if (pathname === '/api/v1/auth/verify' && req.method === 'GET') {
+    const authRequired = !!(config.authToken && config.authToken.trim() !== '');
+    const isAdmin = checkAdminAuth();
+    sendJson(res, 200, {
+      authRequired,
+      authenticated: isAdmin,
+      isAdmin,
+      version: config.version,
+    });
+    return;
+  }
+
   // 3. Server stats
   if (pathname === '/api/v1/stats') {
     const token = extractTokenFromRequest(req);
@@ -177,6 +190,49 @@ export function handleHttpRequest(
       sendJson(res, 200, { success: true, message: `Vault ${vaultId} deleted` });
     } catch (err: any) {
       sendJson(res, 400, { error: err.message || 'Failed to delete vault' });
+    }
+    return;
+  }
+
+  // PUT /api/v1/vaults/:vaultId/access
+  const vaultAccessMatch = pathname.match(/^\/api\/v1\/vaults\/([^\/]+)\/access$/);
+  if (vaultAccessMatch && req.method === 'PUT') {
+    if (!checkAdminAuth()) {
+      sendJson(res, 401, { error: 'Unauthorized: Admin role required' });
+      return;
+    }
+
+    const vaultId = decodeURIComponent(vaultAccessMatch[1]);
+    readJsonBody<{ tokenId?: string; access?: 'admin' | 'editor' | 'viewer' | 'forbidden' | 'inherit' }>(req)
+      .then((body) => {
+        if (!body.tokenId || !body.access) {
+          sendJson(res, 400, { error: 'tokenId and access are required' });
+          return;
+        }
+        const updatedToken = rbac.setVaultAccessForToken(vaultId, body.tokenId, body.access);
+        roomManager.refreshSessionsForToken(body.tokenId, rbac, config.version);
+        sendJson(res, 200, { success: true, token: updatedToken });
+      })
+      .catch((err: any) => {
+        sendJson(res, 400, { error: err.message || 'Failed to update vault access' });
+      });
+    return;
+  }
+
+  // POST /api/v1/vaults/:vaultId/compact
+  const vaultCompactMatch = pathname.match(/^\/api\/v1\/vaults\/([^\/]+)\/compact$/);
+  if (vaultCompactMatch && req.method === 'POST') {
+    if (!checkAdminAuth()) {
+      sendJson(res, 401, { error: 'Unauthorized: Admin role required' });
+      return;
+    }
+
+    const vaultId = decodeURIComponent(vaultCompactMatch[1]);
+    try {
+      const result = storage.compactVault(vaultId);
+      sendJson(res, 200, { success: true, ...result });
+    } catch (err: any) {
+      sendJson(res, 400, { error: err.message || 'Failed to compact vault' });
     }
     return;
   }
@@ -289,7 +345,8 @@ export function handleHttpRequest(
 
     const tokenId = decodeURIComponent(tokenDeleteMatch[1]);
     const deleted = rbac.deleteToken(tokenId);
-    sendJson(res, 200, { success: deleted });
+    const disconnectedSessions = deleted ? roomManager.disconnectByTokenId(tokenId) : 0;
+    sendJson(res, 200, { success: deleted, disconnectedSessions });
     return;
   }
 
@@ -305,6 +362,8 @@ export function handleHttpRequest(
       id: s.id,
       user: s.user,
       role: s.role,
+      tokenId: s.tokenId || null,
+      tokenName: s.tokenName || null,
       vaultId: s.vaultId,
       activeFile: s.activeFile || null,
       ip: s.ip,
@@ -329,8 +388,15 @@ export function handleHttpRequest(
         const updated = rbac.updateToken(tokenId, {
           name: body.name,
           role: body.role,
+          token: body.token,
+          regenerate: body.regenerate,
           vaultAccess: body.vaultAccess,
         });
+        if (body.regenerate || body.token) {
+          roomManager.disconnectByTokenId(tokenId);
+        } else {
+          roomManager.refreshSessionsForToken(tokenId, rbac, config.version);
+        }
         sendJson(res, 200, updated);
       })
       .catch((err: any) => {
@@ -394,17 +460,21 @@ export function handleHttpRequest(
 
       const chunks: Buffer[] = [];
       let totalBytes = 0;
+      let aborted = false;
       const maxBytes = config.maxPayloadMB * 1024 * 1024;
 
       req.on('data', (chunk) => {
+        if (aborted) return;
         totalBytes += chunk.length;
         if (totalBytes > maxBytes) {
+          aborted = true;
           sendJson(res, 413, { error: 'Payload too large (exceeds maxPayloadMB)' });
           req.destroy();
           return;
         }
 
         if (currentStats.totalSizeBytes + totalBytes > maxQuotaBytes) {
+          aborted = true;
           sendJson(res, 413, { error: `Storage quota exceeded for vault "${vaultId}" (${quotaMB}MB limit)` });
           req.destroy();
           return;
@@ -414,6 +484,7 @@ export function handleHttpRequest(
       });
 
       req.on('end', () => {
+        if (aborted) return;
         const buffer = Buffer.concat(chunks);
         storage.saveAttachment(vaultId, filePath, buffer);
         sendJson(res, 200, { success: true, path: filePath, bytes: buffer.length });

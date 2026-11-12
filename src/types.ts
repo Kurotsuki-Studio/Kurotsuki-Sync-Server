@@ -43,7 +43,7 @@ export interface AuthToken {
 export interface ActivityLogEntry {
   id: string;
   timestamp: number;
-  type: 'join' | 'leave' | 'sync' | 'file_event' | 'role_change' | 'vault_create' | 'vault_update' | 'vault_delete' | 'token_create' | 'token_delete';
+  type: 'join' | 'leave' | 'sync' | 'file_event' | 'role_change' | 'vault_create' | 'vault_update' | 'vault_delete' | 'token_create' | 'token_update' | 'token_delete';
   vaultId?: string;
   userName?: string;
   details: string;
@@ -54,7 +54,7 @@ export type WSMessage =
   | { type: 'auth_ack'; success: boolean; message?: string; serverVersion: string; role?: UserRole; vaultId?: string }
   | { type: 'yjs_sync'; path: string; update: string }
   | { type: 'awareness_update'; states: PeerAwarenessState[] }
-  | { type: 'file_event'; action: 'create' | 'modify' | 'delete' | 'rename'; path: string; oldPath?: string; hash?: string; mtime?: number }
+  | { type: 'file_event'; action: 'create' | 'modify' | 'delete' | 'rename'; path: string; oldPath?: string; hash?: string; mtime?: number; isFolder?: boolean }
   | { type: 'file_list_request' }
   | { type: 'file_list_response'; files: Array<{ path: string; hash?: string; mtime: number; isAttachment?: boolean }> }
   | { type: 'doc_request'; path: string }
@@ -69,6 +69,9 @@ export interface ClientSession {
   vaultId: string;
   user: UserProfile;
   role: UserRole;
+  authenticated?: boolean;
+  tokenId?: string;
+  tokenName?: string;
   clientId: number;
   activeFile?: string | null;
   ip: string;

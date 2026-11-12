@@ -18,6 +18,8 @@ export function setupWebSocketServer(
     const ip = req.socket.remoteAddress || 'unknown';
     const initialToken = extractTokenFromRequest(req);
 
+    const isOpenServer = !config.authToken || config.authToken.trim() === '';
+
     // Initial session placeholder
     const session: ClientSession = {
       id: 'sess_' + Math.random().toString(36).substring(2, 10),
@@ -29,6 +31,7 @@ export function setupWebSocketServer(
         color: '#3b82f6',
       },
       role: 'editor',
+      authenticated: isOpenServer,
       clientId: 0,
       ip,
       connectedAt: Date.now(),
@@ -39,7 +42,7 @@ export function setupWebSocketServer(
     if (initialToken !== undefined) {
       const parsedUrl = req.url ? new URL(req.url, 'http://localhost') : null;
       const requestedVault = parsedUrl?.searchParams.get('vaultId') || 'default-vault';
-      const { role } = rbac.resolveRole(initialToken, requestedVault);
+      const { role, tokenObj } = rbac.resolveRole(initialToken, requestedVault);
 
       if (!role) {
         ws.send(
@@ -55,6 +58,9 @@ export function setupWebSocketServer(
       }
       session.role = role;
       session.vaultId = requestedVault;
+      session.authenticated = true;
+      session.tokenId = tokenObj?.id;
+      session.tokenName = tokenObj?.name || (role === 'admin' ? 'Server Admin' : undefined);
     }
 
     // Ping interval to verify socket liveness
@@ -87,8 +93,11 @@ export function setupWebSocketServer(
               return;
             }
 
+            session.authenticated = true;
             session.vaultId = vaultId;
             session.role = role;
+            session.tokenId = tokenObj?.id;
+            session.tokenName = tokenObj?.name || (role === 'admin' ? 'Server Admin' : undefined);
             if (msg.clientInfo) {
               session.user = msg.clientInfo;
             }
@@ -99,7 +108,7 @@ export function setupWebSocketServer(
               type: 'join',
               vaultId: session.vaultId,
               userName: session.user.name,
-              details: `User "${session.user.name}" connected with role [${session.role}]`,
+              details: `User "${session.user.name}"${session.tokenName ? ` (${session.tokenName})` : ''} connected with role [${session.role}]`,
             });
 
             ws.send(
@@ -115,6 +124,11 @@ export function setupWebSocketServer(
           }
 
           case 'yjs_sync': {
+            if (!session.authenticated) {
+              ws.send(JSON.stringify({ type: 'error', message: 'Authentication required', code: 'ERR_UNAUTHORIZED' }));
+              ws.close(4001, 'Unauthorized');
+              return;
+            }
             if (!msg.path || !msg.update) return;
 
             // RBAC check
@@ -135,6 +149,7 @@ export function setupWebSocketServer(
           }
 
           case 'awareness_update': {
+            if (!session.authenticated) return;
             if (Array.isArray(msg.states)) {
               for (const state of msg.states) {
                 session.clientId = state.clientId;
@@ -148,6 +163,11 @@ export function setupWebSocketServer(
           }
 
           case 'file_event': {
+            if (!session.authenticated) {
+              ws.send(JSON.stringify({ type: 'error', message: 'Authentication required', code: 'ERR_UNAUTHORIZED' }));
+              ws.close(4001, 'Unauthorized');
+              return;
+            }
             // RBAC check
             if (session.role === 'viewer') {
               ws.send(
@@ -165,6 +185,11 @@ export function setupWebSocketServer(
           }
 
           case 'file_list_request': {
+            if (!session.authenticated) {
+              ws.send(JSON.stringify({ type: 'error', message: 'Authentication required', code: 'ERR_UNAUTHORIZED' }));
+              ws.close(4001, 'Unauthorized');
+              return;
+            }
             const files = roomManager.getStorage().listAllFiles(session.vaultId);
             ws.send(
               JSON.stringify({
@@ -176,6 +201,11 @@ export function setupWebSocketServer(
           }
 
           case 'doc_request': {
+            if (!session.authenticated) {
+              ws.send(JSON.stringify({ type: 'error', message: 'Authentication required', code: 'ERR_UNAUTHORIZED' }));
+              ws.close(4001, 'Unauthorized');
+              return;
+            }
             if (!msg.path) return;
             const doc = roomManager.getOrCreateDoc(session.vaultId, msg.path);
             const state = Y.encodeStateAsUpdate(doc);
@@ -216,12 +246,14 @@ export function setupWebSocketServer(
     ws.on('close', () => {
       clearInterval(pingInterval);
       roomManager.leaveRoom(session);
-      rbac.addActivityLog({
-        type: 'leave',
-        vaultId: session.vaultId,
-        userName: session.user.name,
-        details: `User "${session.user.name}" disconnected`,
-      });
+      if (session.authenticated) {
+        rbac.addActivityLog({
+          type: 'leave',
+          vaultId: session.vaultId,
+          userName: session.user.name,
+          details: `User "${session.user.name}"${session.tokenName ? ` (${session.tokenName})` : ''} disconnected`,
+        });
+      }
     });
 
     ws.on('error', (err) => {
