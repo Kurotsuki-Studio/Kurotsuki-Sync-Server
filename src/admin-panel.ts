@@ -788,8 +788,12 @@ export function getAdminPanelHtml(): string {
           </div>
         </div>
         <div class="form-group" id="user-secret-group">
-          <label class="form-label" for="user-secret">Token Secret (Optional)</label>
-          <input type="text" id="user-secret" class="form-control" placeholder="Leave blank to auto-generate kuro_...">
+          <label class="form-label" for="user-secret" id="user-secret-label">Token Secret (Optional)</label>
+          <div style="display:flex;gap:8px;">
+            <input type="text" id="user-secret" class="form-control" placeholder="Leave blank to auto-generate kuro_...">
+            <button type="button" class="btn" id="btn-gen-user-secret" title="Generate random token">🎲 Random</button>
+          </div>
+          <div class="form-hint" id="user-secret-hint">Enter a custom secret or click Random to generate one.</div>
         </div>
         <div class="form-group">
           <label class="form-label">Per-Vault Permissions</label>
@@ -823,6 +827,40 @@ export function getAdminPanelHtml(): string {
       <div class="modal-footer">
         <button class="btn" data-close-modal="modal-invite">Close</button>
         <button class="btn btn-primary" id="btn-copy-invite">📋 Copy Connection Info</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: Reset / Change Token -->
+  <div class="modal-backdrop" id="modal-reset-token">
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title" id="reset-token-title">🔄 Reset / Change Token</div>
+        <button class="modal-close" data-close-modal="modal-reset-token">&times;</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="reset-token-id" value="">
+        <p style="font-size:13px;color:var(--text-muted);margin-bottom:14px;">
+          Choose whether to generate a random secret or set a custom token. Active sessions using the old token will be disconnected immediately.
+        </p>
+        <div class="form-group">
+          <label class="form-label" for="reset-token-mode">Token Type</label>
+          <select id="reset-token-mode" class="form-select">
+            <option value="random">🎲 Random Token (auto-generated kuro_...)</option>
+            <option value="custom">✏️ Custom Token</option>
+          </select>
+        </div>
+        <div class="form-group" id="reset-custom-group" style="display:none;">
+          <label class="form-label" for="reset-token-custom">Custom Token Secret</label>
+          <div style="display:flex;gap:8px;">
+            <input type="text" id="reset-token-custom" class="form-control" placeholder="Enter custom secret...">
+            <button type="button" class="btn" id="btn-gen-reset-secret">🎲 Random</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn" data-close-modal="modal-reset-token">Cancel</button>
+        <button class="btn btn-primary" id="btn-confirm-reset-token">Apply New Token</button>
       </div>
     </div>
   </div>
@@ -1263,6 +1301,15 @@ export function getAdminPanelHtml(): string {
       }).join('');
     }
 
+    function generateRandomToken() {
+      const chars = 'abcdef0123456789';
+      let out = 'kuro_';
+      for (let i = 0; i < 32; i++) {
+        out += chars[Math.floor(Math.random() * chars.length)];
+      }
+      return out;
+    }
+
     function openUserModal(tokenObj) {
       const isEdit = !!tokenObj;
       document.getElementById('user-mode').value = isEdit ? 'edit' : 'create';
@@ -1271,8 +1318,11 @@ export function getAdminPanelHtml(): string {
       document.getElementById('user-name').value = isEdit ? tokenObj.name : '';
       document.getElementById('user-role').value = isEdit ? tokenObj.role : 'editor';
       document.getElementById('user-secret').value = '';
+      document.getElementById('user-secret').placeholder = isEdit ? 'Leave blank to keep current token' : 'Leave blank to auto-generate kuro_...';
+      document.getElementById('user-secret-label').textContent = isEdit ? 'Change Token Secret (Optional)' : 'Token Secret (Optional)';
+      document.getElementById('user-secret-hint').textContent = isEdit ? 'Leave blank to keep existing secret, or type/generate a new one.' : 'Enter a custom secret or click Random to generate one.';
       document.getElementById('user-preset-group').style.display = isEdit ? 'none' : 'block';
-      document.getElementById('user-secret-group').style.display = isEdit ? 'none' : 'block';
+      document.getElementById('user-secret-group').style.display = 'block';
       document.getElementById('user-preset').value = 'restricted';
       renderUserVaultPerms(isEdit ? (tokenObj.vaultAccess || {}) : {}, isEdit ? 'global' : 'restricted');
       openModal('modal-user');
@@ -1295,7 +1345,9 @@ export function getAdminPanelHtml(): string {
 
       const url = mode === 'edit' ? '/api/v1/tokens/' + encodeURIComponent(id) : '/api/v1/tokens';
       const method = mode === 'edit' ? 'PUT' : 'POST';
-      const payload = mode === 'edit' ? { name, role, vaultAccess } : { name, role, token: token || undefined, vaultAccess };
+      const payload = mode === 'edit'
+        ? { name, role, vaultAccess, ...(token ? { token } : {}) }
+        : { name, role, token: token || undefined, vaultAccess };
 
       const res = await apiFetch(url, {
         method,
@@ -1445,17 +1497,13 @@ export function getAdminPanelHtml(): string {
       } else if (action === 'edit-user') {
         openUserModal(state.tokens.find(x => x.id === id));
       } else if (action === 'regen-user') {
-        if (!confirm('Regenerate secret for this user? Their old token will stop working immediately.')) return;
-        const res = await apiFetch('/api/v1/tokens/' + encodeURIComponent(id), {
-          method: 'PUT',
-          headers: authHeaders(true),
-          body: JSON.stringify({ regenerate: true })
-        });
-        if (res.ok) {
-          state.revealedTokens.add(id);
-          showToast('Token secret regenerated', 'success');
-          refreshAll();
-        }
+        const t = state.tokens.find(x => x.id === id);
+        document.getElementById('reset-token-id').value = id;
+        document.getElementById('reset-token-title').textContent = '🔄 Reset Token — ' + (t ? t.name : id);
+        document.getElementById('reset-token-mode').value = 'random';
+        document.getElementById('reset-token-custom').value = '';
+        document.getElementById('reset-custom-group').style.display = 'none';
+        openModal('modal-reset-token');
       } else if (action === 'delete-user') {
         if (!confirm('Revoke this token? Active sessions using it will be disconnected immediately.')) return;
         const res = await apiFetch('/api/v1/tokens/' + encodeURIComponent(id), { method: 'DELETE', headers: authHeaders(false) });
@@ -1520,6 +1568,39 @@ export function getAdminPanelHtml(): string {
     document.getElementById('btn-save-vault').addEventListener('click', saveVault);
     document.getElementById('btn-new-user').addEventListener('click', () => openUserModal(null));
     document.getElementById('btn-save-user').addEventListener('click', saveUser);
+    document.getElementById('btn-gen-user-secret').addEventListener('click', () => {
+      document.getElementById('user-secret').value = generateRandomToken();
+    });
+    document.getElementById('btn-gen-reset-secret').addEventListener('click', () => {
+      document.getElementById('reset-token-custom').value = generateRandomToken();
+    });
+    document.getElementById('reset-token-mode').addEventListener('change', (e) => {
+      document.getElementById('reset-custom-group').style.display = e.target.value === 'custom' ? 'block' : 'none';
+    });
+    document.getElementById('btn-confirm-reset-token').addEventListener('click', async () => {
+      const id = document.getElementById('reset-token-id').value;
+      const mode = document.getElementById('reset-token-mode').value;
+      const customSecret = document.getElementById('reset-token-custom').value.trim();
+      if (mode === 'custom' && !customSecret) {
+        showToast('Please enter a custom token secret', 'error');
+        return;
+      }
+      const body = mode === 'custom' ? { token: customSecret } : { regenerate: true };
+      const res = await apiFetch('/api/v1/tokens/' + encodeURIComponent(id), {
+        method: 'PUT',
+        headers: authHeaders(true),
+        body: JSON.stringify(body)
+      });
+      if (res.ok) {
+        state.revealedTokens.add(id);
+        closeModal('modal-reset-token');
+        showToast('Token updated successfully', 'success');
+        await refreshAll();
+      } else {
+        const err = await res.json();
+        showToast(err.error || 'Failed to update token', 'error');
+      }
+    });
 
     document.getElementById('btn-inspect-docs').addEventListener('click', () => loadInspectTab('docs'));
     document.getElementById('btn-inspect-att').addEventListener('click', () => loadInspectTab('attachments'));
