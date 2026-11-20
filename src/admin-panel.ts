@@ -448,6 +448,7 @@ export function getAdminPanelHtml(): string {
         <span class="dot" id="server-dot"></span>
         <span id="server-status-text">Checking...</span>
       </div>
+      <button class="btn btn-sm" id="btn-toggle-live" title="Pause/Resume 10s auto-refresh">⏸️ Live</button>
       <button class="btn btn-sm" id="btn-refresh-now">🔄 Refresh</button>
       <button class="btn btn-sm" id="btn-open-auth">🔑 Admin Token</button>
     </div>
@@ -536,6 +537,7 @@ export function getAdminPanelHtml(): string {
               <div class="panel-sub">Configure vaults, storage quotas, and per-vault user permissions</div>
             </div>
             <div class="panel-actions">
+              <input type="text" id="vaults-search" class="form-select-sm" placeholder="Search vaults..." style="width:180px;">
               <button class="btn btn-primary" id="btn-new-vault">+ Create Vault</button>
             </div>
           </div>
@@ -569,6 +571,7 @@ export function getAdminPanelHtml(): string {
               <div class="panel-sub">Create tokens for friends or devices, restrict them to specific vaults, and share connection details</div>
             </div>
             <div class="panel-actions">
+              <input type="text" id="users-search" class="form-select-sm" placeholder="Search users..." style="width:180px;">
               <button class="btn btn-primary" id="btn-new-user">+ Add User / Token</button>
             </div>
           </div>
@@ -1063,11 +1066,13 @@ export function getAdminPanelHtml(): string {
 
     function renderVaults() {
       const tbody = document.getElementById('vaults-tbody');
-      if (!state.vaults.length) {
-        tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No vaults configured</td></tr>';
+      const q = (document.getElementById('vaults-search').value || '').trim().toLowerCase();
+      const filteredVaults = state.vaults.filter(v => !q || v.name.toLowerCase().includes(q) || v.id.toLowerCase().includes(q));
+      if (!filteredVaults.length) {
+        tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No vaults found</td></tr>';
         return;
       }
-      tbody.innerHTML = state.vaults.map(v => {
+      tbody.innerHTML = filteredVaults.map(v => {
         const stats = v.stats || { docCount: 0, attachmentCount: 0, totalSizeBytes: 0 };
         const usedMB = (stats.totalSizeBytes || 0) / (1024 * 1024);
         const quotaMB = v.quotaMB || 500;
@@ -1102,20 +1107,23 @@ export function getAdminPanelHtml(): string {
 
     function renderUsers() {
       const tbody = document.getElementById('users-tbody');
-      if (!state.tokens.length) {
-        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No second users or tokens yet. Click "+ Add User / Token" to invite someone.</td></tr>';
+      const q = (document.getElementById('users-search').value || '').trim().toLowerCase();
+      const filteredTokens = state.tokens.filter(t => !q || t.name.toLowerCase().includes(q) || t.id.toLowerCase().includes(q));
+      if (!filteredTokens.length) {
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">' + (state.tokens.length ? 'No matching users' : 'No second users or tokens yet. Click "+ Add User / Token" to invite someone.') + '</td></tr>';
         return;
       }
-      tbody.innerHTML = state.tokens.map(t => {
+      tbody.innerHTML = filteredTokens.map(t => {
         const revealed = state.revealedTokens.has(t.id);
         const secretDisplay = revealed ? t.token : (t.token.slice(0, 10) + '••••••••');
+        const isOnline = state.peers.some(p => p.tokenId === t.id);
         const permsHtml = state.vaults.map(v => {
           const eff = getEffectiveRole(t, v.id);
           return '<span class="access-pill">' + escapeHtml(v.id) + ': <span class="badge badge-' + escapeHtml(eff.role) + '">' + escapeHtml(eff.role) + '</span></span>';
         }).join('');
 
         return '<tr>' +
-          '<td><strong>' + escapeHtml(t.name) + '</strong><div style="font-size:11px;color:var(--text-dim);font-family:var(--font-mono);">' + escapeHtml(t.id) + '</div></td>' +
+          '<td><div style="display:flex;align-items:center;gap:6px;"><strong>' + escapeHtml(t.name) + '</strong>' + (isOnline ? '<span class="badge badge-editor" style="font-size:10px;">● Online</span>' : '') + '</div><div style="font-size:11px;color:var(--text-dim);font-family:var(--font-mono);">' + escapeHtml(t.id) + '</div></td>' +
           '<td><span class="badge badge-' + escapeHtml(t.role) + '">' + escapeHtml(t.role) + '</span></td>' +
           '<td><div style="display:flex;align-items:center;gap:6px;">' +
             '<span class="mono">' + escapeHtml(secretDisplay) + '</span>' +
@@ -1622,9 +1630,18 @@ export function getAdminPanelHtml(): string {
 
     document.getElementById('activity-filter-type').addEventListener('change', renderActivity);
     document.getElementById('activity-search').addEventListener('input', renderActivity);
+    document.getElementById('vaults-search').addEventListener('input', renderVaults);
+    document.getElementById('users-search').addEventListener('input', renderUsers);
+
+    let liveAutoRefresh = true;
+    document.getElementById('btn-toggle-live').addEventListener('click', (e) => {
+      liveAutoRefresh = !liveAutoRefresh;
+      e.target.textContent = liveAutoRefresh ? '⏸️ Live' : '▶️ Paused';
+      showToast(liveAutoRefresh ? 'Auto-refresh resumed' : 'Auto-refresh paused', 'info');
+    });
 
     setInterval(() => {
-      if (!state.authRequired || state.authenticated) refreshAll();
+      if (liveAutoRefresh && (!state.authRequired || state.authenticated)) refreshAll();
     }, 10000);
 
     window.addEventListener('DOMContentLoaded', verifyAuth);
